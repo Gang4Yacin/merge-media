@@ -1,0 +1,48 @@
+name: Overlay Images Workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      fg_image:
+        description: "URL de l'image de premier plan transparent (ex: Copy_of_we.spring...png)"
+        required: true
+        type: string
+      ad_image:
+        description: "URL de l'image de publicité (qui se met derrière, dans le trou transparent)"
+        required: true
+        type: string
+
+jobs:
+  overlay-job:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install opencv-python-headless numpy requests
+
+      - name: Check script existence
+        run: ls -la
+
+      - name: Run Overlay Script
+        run: |
+          python overlay_two_images.py \
+            --fg_image "${{ github.event.inputs.fg_image }}" \
+            --ad_image "${{ github.event.inputs.ad_image }}" \
+            --output output_overlay.jpg
+
+      - name: Upload Output artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Overlay_Result
+          path: output_overlay.jpg
+          retention-days: 7
