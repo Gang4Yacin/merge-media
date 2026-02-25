@@ -11,6 +11,10 @@ on:
         description: "URL de l'image de publicité (qui se met derrière, dans le trou transparent)"
         required: true
         type: string
+      resumeUrl:
+        description: "n8n resume URL (automatic)"
+        required: false
+        type: string
 
 jobs:
   overlay-job:
