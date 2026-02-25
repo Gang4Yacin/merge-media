@@ -1,0 +1,68 @@
+name: Modify Image Text Workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_url:
+        description: "URL de l'image contenant le texte à modifier"
+        required: true
+        type: string
+        default: "https://res.cloudinary.com/dhmghrmza/image/upload/v1772033969/output_overlay_bw7eau.jpg"
+      resumeUrl:
+        description: "n8n resume URL (automatic)"
+        required: false
+        type: string
+
+jobs:
+  modify-text-job:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install google-genai tenacity pillow requests
+
+      - name: Run Modify Image Script
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python modify_text_image.py \
+            --image_url "${{ github.event.inputs.image_url }}" \
+            --output output_modified.jpg
+
+      - name: Upload to Supabase and Cleanup
+        id: upload_supabase
+        run: |
+          # Only upload if the file was successfully generated
+          if [ -f "output_modified.jpg" ]; then
+            FILENAME="modified_${{ github.run_id }}.jpg"
+            curl -X POST "https://bksiaeiqzmoaxvkdtspn.supabase.co/storage/v1/object/n8n-image-generation/images/$FILENAME" \
+              -H "Authorization: Bearer ${{ secrets.SUPABASE_TOKEN }}" \
+              -H "Content-Type: image/jpeg" \
+              --data-binary "@output_modified.jpg"
+              
+            PUBLIC_URL="https://bksiaeiqzmoaxvkdtspn.supabase.co/storage/v1/object/public/n8n-image-generation/images/$FILENAME"
+            echo "IMAGE_URL=$PUBLIC_URL" >> $GITHUB_ENV
+            echo "Uploaded to $PUBLIC_URL"
+            
+            rm output_modified.jpg
+            echo "Local file deleted."
+          else
+            echo "output_modified.jpg not found. Generation likely failed."
+            exit 1
+          fi
+
+      - name: Send Callback to n8n (if resumeUrl provided)
+        if: ${{ github.event.inputs.resumeUrl != '' && env.IMAGE_URL != '' }}
+        run: |
+          curl -X POST "${{ github.event.inputs.resumeUrl }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"imageUrl\": \"${{ env.IMAGE_URL }}\"}"
