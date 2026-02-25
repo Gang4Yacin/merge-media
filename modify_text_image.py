@@ -29,7 +29,8 @@ def generate_modification(client, model_name, img, prompt):
     try:
         response = client.models.generate_content(
             model=model_name,
-            contents=[img, prompt]
+            contents=[img, prompt],
+            config={'http_options': {'timeout': 45.0}} # 45 seconds timeout
         )
         return response
     except Exception as e:
