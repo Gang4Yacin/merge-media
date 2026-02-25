@@ -43,14 +43,7 @@ jobs:
             --ad_image "${{ github.event.inputs.ad_image }}" \
             --output output_overlay.jpg
 
-      - name: Upload Output artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Overlay_Result
-          path: output_overlay.jpg
-          retention-days: 7
-
-      - name: Upload to Supabase
+      - name: Upload to Supabase and Cleanup
         id: upload_supabase
         run: |
           FILENAME="overlay_${{ github.run_id }}.jpg"
@@ -62,6 +55,10 @@ jobs:
           PUBLIC_URL="https://bksiaeiqzmoaxvkdtspn.supabase.co/storage/v1/object/public/n8n-image-generation/images/$FILENAME"
           echo "IMAGE_URL=$PUBLIC_URL" >> $GITHUB_ENV
           echo "Uploaded to $PUBLIC_URL"
+          
+          # Delete the local file to ensure nothing stays on the GitHub runner
+          rm output_overlay.jpg
+          echo "Local file deleted."
 
       - name: Send Callback to n8n (if resumeUrl provided)
         if: ${{ github.event.inputs.resumeUrl != '' }}
