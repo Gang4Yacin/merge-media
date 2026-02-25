@@ -49,3 +49,23 @@ jobs:
           name: Overlay_Result
           path: output_overlay.jpg
           retention-days: 7
+
+      - name: Upload to Supabase
+        id: upload_supabase
+        run: |
+          FILENAME="overlay_${{ github.run_id }}.jpg"
+          curl -X POST "https://bksiaeiqzmoaxvkdtspn.supabase.co/storage/v1/object/n8n-image-generation/images/$FILENAME" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_TOKEN }}" \
+            -H "Content-Type: image/jpeg" \
+            --data-binary "@output_overlay.jpg"
+            
+          PUBLIC_URL="https://bksiaeiqzmoaxvkdtspn.supabase.co/storage/v1/object/public/n8n-image-generation/images/$FILENAME"
+          echo "IMAGE_URL=$PUBLIC_URL" >> $GITHUB_ENV
+          echo "Uploaded to $PUBLIC_URL"
+
+      - name: Send Callback to n8n (if resumeUrl provided)
+        if: ${{ github.event.inputs.resumeUrl != '' }}
+        run: |
+          curl -X POST "${{ github.event.inputs.resumeUrl }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"imageUrl\": \"${{ env.IMAGE_URL }}\"}"
