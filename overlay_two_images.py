@@ -148,6 +148,8 @@ def main():
             
             if public_url:
                 item["final_image"] = public_url
+                if "meta_ad_creative_id" not in item:
+                    item["meta_ad_creative_id"] = None
                 results.append(item)
             else:
                 print("  Upload failed, skipping from results.")
