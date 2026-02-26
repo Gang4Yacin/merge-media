@@ -3,12 +3,8 @@ name: Overlay Images Workflow
 on:
   workflow_dispatch:
     inputs:
-      fg_image:
-        description: "URL de l'image de premier plan transparent (ex: Copy_of_we.spring...png)"
-        required: true
-        type: string
-      ad_image:
-        description: "URL de l'image de publicité (qui se met derrière, dans le trou transparent)"
+      images_json:
+        description: "Un tableau JSON contenant les paires fg_image et ad_image"
         required: true
         type: string
       resumeUrl:
@@ -33,36 +29,22 @@ jobs:
           python -m pip install --upgrade pip
           pip install opencv-python-headless numpy requests
 
-      - name: Check script existence
-        run: ls -la
+      - name: Save JSON to file
+        run: |
+          cat << 'EOF' > input.json
+          ${{ github.event.inputs.images_json }}
+          EOF
 
       - name: Run Overlay Script
+        env:
+          SUPABASE_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
         run: |
-          python overlay_two_images.py \
-            --fg_image "${{ github.event.inputs.fg_image }}" \
-            --ad_image "${{ github.event.inputs.ad_image }}" \
-            --output output_overlay.jpg
-
-      - name: Upload to Supabase and Cleanup
-        id: upload_supabase
-        run: |
-          FILENAME="overlay_${{ github.run_id }}.jpg"
-          curl -X POST "https://bksiaeiqzmoaxvkdtspn.supabase.co/storage/v1/object/n8n-image-generation/images/$FILENAME" \
-            -H "Authorization: Bearer ${{ secrets.SUPABASE_TOKEN }}" \
-            -H "Content-Type: image/jpeg" \
-            --data-binary "@output_overlay.jpg"
-            
-          PUBLIC_URL="https://bksiaeiqzmoaxvkdtspn.supabase.co/storage/v1/object/public/n8n-image-generation/images/$FILENAME"
-          echo "IMAGE_URL=$PUBLIC_URL" >> $GITHUB_ENV
-          echo "Uploaded to $PUBLIC_URL"
-          
-          # Delete the local file to ensure nothing stays on the GitHub runner
-          rm output_overlay.jpg
-          echo "Local file deleted."
+          python overlay_two_images.py --input input.json --output results.json
 
       - name: Send Callback to n8n (if resumeUrl provided)
         if: ${{ github.event.inputs.resumeUrl != '' }}
         run: |
+          # Envoyer directement le fichier JSON généré en body de la requête
           curl -X POST "${{ github.event.inputs.resumeUrl }}" \
             -H "Content-Type: application/json" \
-            -d "{\"imageUrl\": \"${{ env.IMAGE_URL }}\"}"
+            -d @results.json
