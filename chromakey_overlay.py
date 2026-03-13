@@ -46,7 +46,8 @@ def upload_to_supabase(filepath, token, filename):
         return None
 
 
-def process_chromakey(bg_url, greenscreen_url, output_path, spill_offset=None):
+def process_chromakey(bg_url, greenscreen_url, output_path,
+                      spill_offset=None, min_diff=None, max_diff=None):
     print(f"  Downloading bg_image: {bg_url}")
     bg_img = download_image(bg_url)
     if bg_img is None:
@@ -72,6 +73,12 @@ def process_chromakey(bg_url, greenscreen_url, output_path, spill_offset=None):
     bg_h, bg_w = bg_img.shape[:2]
     gs_img = cv2.resize(gs_img, (bg_w, bg_h), interpolation=cv2.INTER_LANCZOS4)
 
+    # Resolve per-item overrides or use defaults
+    _min_diff = min_diff if min_diff is not None else MIN_DIFF
+    _max_diff = max_diff if max_diff is not None else MAX_DIFF
+    _spill = spill_offset if spill_offset is not None else SPILL_OFFSET
+    print(f"  Parameters: min_diff={_min_diff}, max_diff={_max_diff}, spill_offset={_spill}")
+
     # Convert to float for processing
     gs_float = gs_img.astype(np.float32)
     bg_float = bg_img.astype(np.float32)
@@ -82,7 +89,7 @@ def process_chromakey(bg_url, greenscreen_url, output_path, spill_offset=None):
     diff = g - max_rb
 
     # Calculate transparency (0 = opaque/text, 1 = transparent/green screen)
-    transparency = (diff - MIN_DIFF) / (MAX_DIFF - MIN_DIFF)
+    transparency = (diff - _min_diff) / (_max_diff - _min_diff)
     transparency = np.clip(transparency, 0.0, 1.0)
 
     # Restrict keying to green hue range using HSV
@@ -103,9 +110,7 @@ def process_chromakey(bg_url, greenscreen_url, output_path, spill_offset=None):
     alpha = 1.0 - transparency
 
     # Spill suppression: limit green channel to max(r, b) + offset
-    offset = spill_offset if spill_offset is not None else SPILL_OFFSET
-    print(f"  Using spill_offset: {offset}")
-    despilled_g = np.minimum(g, max_rb + offset)
+    despilled_g = np.minimum(g, max_rb + _spill)
     fg_despilled = cv2.merge([b, despilled_g, r])
 
     # Final composite: text over background
@@ -165,14 +170,22 @@ def main():
             print("  Skipping: missing bg_image or greenscreen_image")
             continue
 
-        # Optional per-item spill_offset override
+        # Optional per-item parameter overrides
         spill_offset = item.get("spill_offset")
         if spill_offset is not None:
             spill_offset = float(spill_offset)
+        min_diff = item.get("min_diff")
+        if min_diff is not None:
+            min_diff = float(min_diff)
+        max_diff = item.get("max_diff")
+        if max_diff is not None:
+            max_diff = float(max_diff)
 
         temp_filepath = f"temp_{uuid.uuid4().hex[:8]}.png"
 
-        success = process_chromakey(bg_url, gs_url, temp_filepath, spill_offset=spill_offset)
+        success = process_chromakey(bg_url, gs_url, temp_filepath,
+                                    spill_offset=spill_offset,
+                                    min_diff=min_diff, max_diff=max_diff)
 
         if success:
             filename = f"chromakey_{uuid.uuid4().hex}.png"
