@@ -16,7 +16,7 @@ MAX_DIFF = 75.0      # Above this green-difference = fully transparent (green sc
 TARGET_HUE = 71.0    # HSV hue for #00b140 green
 HUE_HARD = 15.0      # Hard hue tolerance (degrees)
 HUE_SOFT = 10.0      # Soft falloff beyond hard tolerance
-SPILL_OFFSET = 5.0   # Green spill suppression offset
+SPILL_OFFSET = 5.0   # Green spill suppression offset (default, overridable per item)
 
 
 def download_image(url):
@@ -31,9 +31,10 @@ def download_image(url):
 
 def upload_to_supabase(filepath, token, filename):
     url = f"{SUPABASE_URL}/{filename}"
+    content_type = "image/png" if filename.endswith(".png") else "image/jpeg"
     headers = {
         "Authorization": f"Bearer {token}",
-        "Content-Type": "image/jpeg"
+        "Content-Type": content_type
     }
     with open(filepath, "rb") as f:
         response = requests.post(url, headers=headers, data=f)
@@ -45,7 +46,7 @@ def upload_to_supabase(filepath, token, filename):
         return None
 
 
-def process_chromakey(bg_url, greenscreen_url, output_path):
+def process_chromakey(bg_url, greenscreen_url, output_path, spill_offset=None):
     print(f"  Downloading bg_image: {bg_url}")
     bg_img = download_image(bg_url)
     if bg_img is None:
@@ -67,9 +68,9 @@ def process_chromakey(bg_url, greenscreen_url, output_path):
     elif gs_img.shape[2] == 4:
         gs_img = cv2.cvtColor(gs_img, cv2.COLOR_BGRA2BGR)
 
-    # Resize greenscreen image to match background dimensions
+    # Resize greenscreen image to match background dimensions (high-quality interpolation)
     bg_h, bg_w = bg_img.shape[:2]
-    gs_img = cv2.resize(gs_img, (bg_w, bg_h))
+    gs_img = cv2.resize(gs_img, (bg_w, bg_h), interpolation=cv2.INTER_LANCZOS4)
 
     # Convert to float for processing
     gs_float = gs_img.astype(np.float32)
@@ -102,7 +103,9 @@ def process_chromakey(bg_url, greenscreen_url, output_path):
     alpha = 1.0 - transparency
 
     # Spill suppression: limit green channel to max(r, b) + offset
-    despilled_g = np.minimum(g, max_rb + SPILL_OFFSET)
+    offset = spill_offset if spill_offset is not None else SPILL_OFFSET
+    print(f"  Using spill_offset: {offset}")
+    despilled_g = np.minimum(g, max_rb + offset)
     fg_despilled = cv2.merge([b, despilled_g, r])
 
     # Final composite: text over background
@@ -110,6 +113,7 @@ def process_chromakey(bg_url, greenscreen_url, output_path):
     result = fg_despilled * alpha_3d + bg_float * (1.0 - alpha_3d)
     result = np.clip(result, 0, 255).astype(np.uint8)
 
+    # Save as PNG for lossless quality
     cv2.imwrite(output_path, result)
     print(f"  Saved result to {output_path}")
     return True
@@ -161,12 +165,17 @@ def main():
             print("  Skipping: missing bg_image or greenscreen_image")
             continue
 
-        temp_filepath = f"temp_{uuid.uuid4().hex[:8]}.jpg"
+        # Optional per-item spill_offset override
+        spill_offset = item.get("spill_offset")
+        if spill_offset is not None:
+            spill_offset = float(spill_offset)
 
-        success = process_chromakey(bg_url, gs_url, temp_filepath)
+        temp_filepath = f"temp_{uuid.uuid4().hex[:8]}.png"
+
+        success = process_chromakey(bg_url, gs_url, temp_filepath, spill_offset=spill_offset)
 
         if success:
-            filename = f"chromakey_{uuid.uuid4().hex}.jpg"
+            filename = f"chromakey_{uuid.uuid4().hex}.png"
             print(f"  Uploading to Supabase as {filename}...")
             public_url = upload_to_supabase(temp_filepath, supabase_token, filename)
 
