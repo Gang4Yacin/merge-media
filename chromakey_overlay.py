@@ -85,9 +85,33 @@ def process_chromakey(bg_url, greenscreen_url, output_path,
     elif gs_img.shape[2] == 4:
         gs_img = cv2.cvtColor(gs_img, cv2.COLOR_BGRA2BGR)
 
-    # Resize greenscreen image to match background dimensions (high-quality interpolation)
+    # Center-align greenscreen on background canvas (no stretch/compress)
     bg_h, bg_w = bg_img.shape[:2]
-    gs_img = cv2.resize(gs_img, (bg_w, bg_h), interpolation=cv2.INTER_LANCZOS4)
+    gs_h, gs_w = gs_img.shape[:2]
+    print(f"  Dimensions: bg={bg_w}x{bg_h}, gs={gs_w}x{gs_h}")
+
+    # Create a canvas the size of bg, filled with pure green (#00b140 → BGR: 64,177,0)
+    # so that areas outside the greenscreen image are keyed out as transparent
+    gs_canvas = np.full((bg_h, bg_w, 3), (64, 177, 0), dtype=np.uint8)
+
+    # Calculate offsets to center the greenscreen on the canvas
+    x_offset = (bg_w - gs_w) // 2  # negative if gs is wider than bg
+    y_offset = (bg_h - gs_h) // 2  # negative if gs is taller than bg
+
+    # Source region (crop from gs if it overflows the canvas)
+    src_x1 = max(0, -x_offset)
+    src_y1 = max(0, -y_offset)
+    src_x2 = min(gs_w, bg_w - x_offset)
+    src_y2 = min(gs_h, bg_h - y_offset)
+
+    # Destination region on the canvas
+    dst_x1 = max(0, x_offset)
+    dst_y1 = max(0, y_offset)
+    dst_x2 = dst_x1 + (src_x2 - src_x1)
+    dst_y2 = dst_y1 + (src_y2 - src_y1)
+
+    gs_canvas[dst_y1:dst_y2, dst_x1:dst_x2] = gs_img[src_y1:src_y2, src_x1:src_x2]
+    gs_img = gs_canvas
 
     # Resolve per-item overrides or use defaults
     _min_diff = min_diff if min_diff is not None else MIN_DIFF
