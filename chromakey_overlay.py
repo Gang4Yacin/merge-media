@@ -20,13 +20,24 @@ SPILL_OFFSET = 5.0   # Green spill suppression offset (default, overridable per 
 
 
 def download_image(url):
-    response = requests.get(url)
-    if response.status_code == 200:
-        image_array = np.asarray(bytearray(response.content), dtype=np.uint8)
-        return cv2.imdecode(image_array, cv2.IMREAD_UNCHANGED)
-    else:
-        print(f"Failed to download image from {url}")
-        return None
+    """Download an image from URL. Returns (image, error_message) tuple."""
+    try:
+        response = requests.get(url, timeout=30)
+        if response.status_code == 200:
+            image_array = np.asarray(bytearray(response.content), dtype=np.uint8)
+            img = cv2.imdecode(image_array, cv2.IMREAD_UNCHANGED)
+            if img is None:
+                return None, f"Downloaded data is not a valid image (Content-Type: {response.headers.get('Content-Type', 'unknown')}, size: {len(response.content)} bytes)"
+            return img, None
+        else:
+            body_preview = response.text[:300]
+            return None, f"HTTP {response.status_code}: {body_preview}"
+    except requests.exceptions.Timeout:
+        return None, "Request timed out after 30s"
+    except requests.exceptions.ConnectionError as e:
+        return None, f"Connection error: {e}"
+    except Exception as e:
+        return None, f"Unexpected error: {e}"
 
 
 def upload_to_supabase(filepath, token, filename):
@@ -48,15 +59,20 @@ def upload_to_supabase(filepath, token, filename):
 
 def process_chromakey(bg_url, greenscreen_url, output_path,
                       spill_offset=None, min_diff=None, max_diff=None):
+    """Process chromakey overlay. Returns (success, error_message) tuple."""
     print(f"  Downloading bg_image: {bg_url}")
-    bg_img = download_image(bg_url)
+    bg_img, bg_err = download_image(bg_url)
     if bg_img is None:
-        return False
+        err = f"Failed to download bg_image: {bg_err}"
+        print(f"  {err}")
+        return False, err
 
     print(f"  Downloading greenscreen_image: {greenscreen_url}")
-    gs_img = download_image(greenscreen_url)
+    gs_img, gs_err = download_image(greenscreen_url)
     if gs_img is None:
-        return False
+        err = f"Failed to download greenscreen_image: {gs_err}"
+        print(f"  {err}")
+        return False, err
 
     # Strip alpha channel if present
     if len(bg_img.shape) == 2:
@@ -121,7 +137,7 @@ def process_chromakey(bg_url, greenscreen_url, output_path,
     # Save as PNG for lossless quality
     cv2.imwrite(output_path, result)
     print(f"  Saved result to {output_path}")
-    return True
+    return True, None
 
 
 def main():
@@ -160,6 +176,7 @@ def main():
             sys.exit(1)
 
     results = []
+    errors = []
 
     for idx, item in enumerate(items):
         print(f"\n--- Processing pair {idx+1}/{len(items)} ---")
@@ -167,7 +184,14 @@ def main():
         gs_url = item.get("greenscreen_image")
 
         if not bg_url or not gs_url:
-            print("  Skipping: missing bg_image or greenscreen_image")
+            err_msg = "Missing bg_image or greenscreen_image in input"
+            print(f"  Skipping: {err_msg}")
+            errors.append({
+                "index": idx,
+                "bg_image": bg_url or "(missing)",
+                "greenscreen_image": gs_url or "(missing)",
+                "error": err_msg
+            })
             continue
 
         # Optional per-item parameter overrides
@@ -183,7 +207,7 @@ def main():
 
         temp_filepath = f"temp_{uuid.uuid4().hex[:8]}.png"
 
-        success = process_chromakey(bg_url, gs_url, temp_filepath,
+        success, err_msg = process_chromakey(bg_url, gs_url, temp_filepath,
                                     spill_offset=spill_offset,
                                     min_diff=min_diff, max_diff=max_diff)
 
@@ -196,17 +220,45 @@ def main():
                 item["final_image"] = public_url
                 results.append(item)
             else:
-                print("  Upload failed, skipping from results.")
+                upload_err = f"Failed to upload to Supabase (file: {filename})"
+                print(f"  {upload_err}")
+                errors.append({
+                    "index": idx,
+                    "bg_image": bg_url,
+                    "greenscreen_image": gs_url,
+                    "error": upload_err
+                })
 
             if os.path.exists(temp_filepath):
                 os.remove(temp_filepath)
         else:
-            print("  Processing failed, skipping from results.")
+            print(f"  Processing failed: {err_msg}")
+            errors.append({
+                "index": idx,
+                "bg_image": bg_url,
+                "greenscreen_image": gs_url,
+                "error": err_msg
+            })
+
+    total = len(items)
+    ok = len(results)
+    fail = len(errors)
+    summary = f"{ok}/{total} succeeded, {fail} failed"
+
+    output_data = {
+        "results": results,
+        "errors": errors,
+        "summary": summary
+    }
 
     with open(args.output, 'w', encoding='utf-8') as f:
-        json.dump(results, f, indent=2)
+        json.dump(output_data, f, indent=2)
 
-    print(f"\nCompleted processing. {len(results)} successful chromakey overlays saved to {args.output}")
+    print(f"\n{summary}. Output saved to {args.output}")
+    if errors:
+        print("Errors:")
+        for e in errors:
+            print(f"  [{e['index']}] {e['error']}")
 
 
 if __name__ == '__main__':
