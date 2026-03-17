@@ -6,6 +6,7 @@ import sys
 import json
 import os
 import uuid
+import math
 
 SUPABASE_URL = "https://bksiaeiqzmoaxvkdtspn.supabase.co/storage/v1/object/n8n-image-generation/images"
 SUPABASE_PUBLIC_URL_PREFIX = "https://bksiaeiqzmoaxvkdtspn.supabase.co/storage/v1/object/public/n8n-image-generation/images"
@@ -57,6 +58,30 @@ def upload_to_supabase(filepath, token, filename):
         return None
 
 
+def detect_aspect_ratio(width, height):
+    """Detect the closest standard aspect ratio for given dimensions."""
+    STANDARD_RATIOS = [
+        (1, 1, "1:1"),
+        (4, 5, "4:5"),
+        (5, 4, "5:4"),
+        (9, 16, "9:16"),
+        (16, 9, "16:9"),
+        (2, 3, "2:3"),
+        (3, 2, "3:2"),
+        (3, 4, "3:4"),
+        (4, 3, "4:3"),
+    ]
+    ratio = width / height
+    best_match = None
+    best_diff = float('inf')
+    for w, h, label in STANDARD_RATIOS:
+        diff = abs(ratio - w / h)
+        if diff < best_diff:
+            best_diff = diff
+            best_match = label
+    return best_match
+
+
 def process_chromakey(bg_url, greenscreen_url, output_path,
                       spill_offset=None, min_diff=None, max_diff=None):
     """Process chromakey overlay. Returns (success, error_message) tuple."""
@@ -65,14 +90,14 @@ def process_chromakey(bg_url, greenscreen_url, output_path,
     if bg_img is None:
         err = f"Failed to download bg_image: {bg_err}"
         print(f"  {err}")
-        return False, err
+        return False, err, None
 
     print(f"  Downloading greenscreen_image: {greenscreen_url}")
     gs_img, gs_err = download_image(greenscreen_url)
     if gs_img is None:
         err = f"Failed to download greenscreen_image: {gs_err}"
         print(f"  {err}")
-        return False, err
+        return False, err, None
 
     # Strip alpha channel if present
     if len(bg_img.shape) == 2:
@@ -158,10 +183,15 @@ def process_chromakey(bg_url, greenscreen_url, output_path,
     result = fg_despilled * alpha_3d + bg_float * (1.0 - alpha_3d)
     result = np.clip(result, 0, 255).astype(np.uint8)
 
+    # Detect actual aspect ratio of the output image
+    out_h, out_w = result.shape[:2]
+    aspect_ratio = detect_aspect_ratio(out_w, out_h)
+    print(f"  Output dimensions: {out_w}x{out_h}, detected format: {aspect_ratio}")
+
     # Save as PNG for lossless quality
     cv2.imwrite(output_path, result)
     print(f"  Saved result to {output_path}")
-    return True, None
+    return True, None, aspect_ratio
 
 
 def main():
@@ -231,7 +261,7 @@ def main():
 
         temp_filepath = f"temp_{uuid.uuid4().hex[:8]}.png"
 
-        success, err_msg = process_chromakey(bg_url, gs_url, temp_filepath,
+        success, err_msg, detected_format = process_chromakey(bg_url, gs_url, temp_filepath,
                                     spill_offset=spill_offset,
                                     min_diff=min_diff, max_diff=max_diff)
 
@@ -242,6 +272,7 @@ def main():
 
             if public_url:
                 item["final_image"] = public_url
+                item["detected_format"] = detected_format
                 results.append(item)
             else:
                 upload_err = f"Failed to upload to Supabase (file: {filename})"
