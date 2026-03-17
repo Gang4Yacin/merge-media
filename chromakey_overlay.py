@@ -13,7 +13,7 @@ SUPABASE_PUBLIC_URL_PREFIX = "https://bksiaeiqzmoaxvkdtspn.supabase.co/storage/v
 # Chromakey tuning parameters
 MIN_DIFF = 10.0      # Below this green-difference = fully opaque (foreground)
 MAX_DIFF = 75.0      # Above this green-difference = fully transparent (green screen)
-TARGET_HUE = 71.0    # HSV hue for #00b140 green
+TARGET_HUE = 60.0    # HSV hue for #00FF00 green
 HUE_HARD = 15.0      # Hard hue tolerance (degrees)
 HUE_SOFT = 10.0      # Soft falloff beyond hard tolerance
 SPILL_OFFSET = 5.0   # Green spill suppression offset (default, overridable per item)
@@ -91,8 +91,8 @@ def process_chromakey(bg_url, greenscreen_url, output_path,
     print(f"  Dimensions: bg={bg_w}x{bg_h}, gs={gs_w}x{gs_h}")
 
     # Create a canvas the size of bg, filled with pure green (#00b140 → BGR: 64,177,0)
-    # so that areas outside the greenscreen image are keyed out as transparent
-    gs_canvas = np.full((bg_h, bg_w, 3), (64, 177, 0), dtype=np.uint8)
+    # so that areas outside the greenscreen are keyed out as transparent (#00FF00 → BGR: 0,255,0)
+    gs_canvas = np.full((bg_h, bg_w, 3), (0, 255, 0), dtype=np.uint8)
 
     # Calculate offsets to center the greenscreen on the canvas
     x_offset = (bg_w - gs_w) // 2  # negative if gs is wider than bg
