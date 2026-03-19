@@ -8,8 +8,8 @@ import os
 import uuid
 import math
 
-SUPABASE_URL = "https://bksiaeiqzmoaxvkdtspn.supabase.co/storage/v1/object/n8n-image-generation/images"
-SUPABASE_PUBLIC_URL_PREFIX = "https://bksiaeiqzmoaxvkdtspn.supabase.co/storage/v1/object/public/n8n-image-generation/images"
+SUPABASE_URL = "https://bksiaeiqzmoaxvkdtspn.supabase.co/storage/v1/object/overlay-templates/images"
+SUPABASE_PUBLIC_URL_PREFIX = "https://bksiaeiqzmoaxvkdtspn.supabase.co/storage/v1/object/public/overlay-templates/images"
 
 # Chromakey tuning parameters
 MIN_DIFF = 10.0      # Below this green-difference = fully opaque (foreground)
