@@ -19,6 +19,10 @@ HUE_HARD = 15.0      # Hard hue tolerance (degrees)
 HUE_SOFT = 10.0      # Soft falloff beyond hard tolerance
 SPILL_OFFSET = 5.0   # Green spill suppression offset (default, overridable per item)
 
+# Target aspect ratio for bg_image cropping
+TARGET_RATIO_W = 9
+TARGET_RATIO_H = 16
+
 
 def download_image(url):
     """Download an image from URL. Returns (image, error_message) tuple."""
@@ -82,9 +86,40 @@ def detect_aspect_ratio(width, height):
     return best_match
 
 
+def crop_to_9_16(img):
+    """Center-crop an image to 9:16 aspect ratio if it isn't already.
+    Returns the cropped image (or original if already 9:16)."""
+    h, w = img.shape[:2]
+    current_ratio = w / h
+    target_ratio = TARGET_RATIO_W / TARGET_RATIO_H  # 0.5625
+
+    # Tolerance: if within 2% of 9:16, consider it already correct
+    if abs(current_ratio - target_ratio) / target_ratio < 0.02:
+        print(f"  bg_image already 9:16 ({w}x{h}), no crop needed")
+        return img
+
+    detected = detect_aspect_ratio(w, h)
+    print(f"  bg_image is {detected} ({w}x{h}), cropping to 9:16...")
+
+    if current_ratio > target_ratio:
+        # Image is too wide → crop width (keep full height)
+        new_w = int(h * target_ratio)
+        x_start = (w - new_w) // 2
+        cropped = img[:, x_start:x_start + new_w]
+    else:
+        # Image is too tall → crop height (keep full width)
+        new_h = int(w / target_ratio)
+        y_start = (h - new_h) // 2
+        cropped = img[y_start:y_start + new_h, :]
+
+    ch, cw = cropped.shape[:2]
+    print(f"  Cropped to {cw}x{ch} (9:16)")
+    return cropped
+
+
 def process_chromakey(bg_url, greenscreen_url, output_path,
                       spill_offset=None, min_diff=None, max_diff=None):
-    """Process chromakey overlay. Returns (success, error_message) tuple."""
+    """Process chromakey overlay. Returns (success, error_message, aspect_ratio) tuple."""
     print(f"  Downloading bg_image: {bg_url}")
     bg_img, bg_err = download_image(bg_url)
     if bg_img is None:
@@ -110,13 +145,16 @@ def process_chromakey(bg_url, greenscreen_url, output_path,
     elif gs_img.shape[2] == 4:
         gs_img = cv2.cvtColor(gs_img, cv2.COLOR_BGRA2BGR)
 
+    # Crop bg_image to 9:16 if needed (measure actual ratio, not a flag)
+    bg_img = crop_to_9_16(bg_img)
+
     # Center-align greenscreen on background canvas (no stretch/compress)
     bg_h, bg_w = bg_img.shape[:2]
     gs_h, gs_w = gs_img.shape[:2]
     print(f"  Dimensions: bg={bg_w}x{bg_h}, gs={gs_w}x{gs_h}")
 
-    # Create a canvas the size of bg, filled with pure green (#00b140 → BGR: 64,177,0)
-    # so that areas outside the greenscreen are keyed out as transparent (#00FF00 → BGR: 0,255,0)
+    # Create a canvas the size of bg, filled with pure green (#00FF00 → BGR: 0,255,0)
+    # so that areas outside the greenscreen are keyed out as transparent
     gs_canvas = np.full((bg_h, bg_w, 3), (0, 255, 0), dtype=np.uint8)
 
     # Calculate offsets to center the greenscreen on the canvas
