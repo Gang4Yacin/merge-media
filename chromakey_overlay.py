@@ -19,6 +19,10 @@ HUE_HARD = 15.0      # Hard hue tolerance (degrees)
 HUE_SOFT = 10.0      # Soft falloff beyond hard tolerance
 SPILL_OFFSET = 5.0   # Green spill suppression offset (default, overridable per item)
 
+# Target aspect ratio
+TARGET_RATIO_W = 9
+TARGET_RATIO_H = 16
+
 
 def download_image(url):
     """Download an image from URL. Returns (image, error_message) tuple."""
@@ -82,35 +86,71 @@ def detect_aspect_ratio(width, height):
     return best_match
 
 
-def scale_to_fill(img, target_w, target_h):
-    """Scale image to fill target dimensions (cover), then center-crop to exact size.
+def is_9_16(w, h, tolerance=0.02):
+    """Check if dimensions are already 9:16 (within tolerance)."""
+    target = TARGET_RATIO_W / TARGET_RATIO_H  # 0.5625
+    return abs(w / h - target) / target < tolerance
 
-    This ensures bg_image fully covers the greenscreen canvas with no
-    green borders, while preserving the center of the image.
+
+def fit_to_canvas(img, canvas_w, canvas_h, label="image"):
+    """Scale-to-fill + center-crop an image to exact canvas dimensions.
+
+    If the image is already 9:16 it is simply resized to the canvas size
+    (no cropping needed). Otherwise it is scaled up/down so the smallest
+    side covers the canvas, then center-cropped to the exact size.
     """
     h, w = img.shape[:2]
-    # Scale factor: pick the larger scale so the image covers the entire target
-    scale = max(target_w / w, target_h / h)
+
+    if is_9_16(w, h):
+        # Already 9:16 — just resize to canvas, no crop needed
+        resized = cv2.resize(img, (canvas_w, canvas_h),
+                             interpolation=cv2.INTER_AREA if w > canvas_w else cv2.INTER_LANCZOS4)
+        print(f"  {label}: already 9:16 ({w}x{h}), resized to {canvas_w}x{canvas_h}")
+        return resized
+
+    detected = detect_aspect_ratio(w, h)
+    # Scale-to-fill: pick the larger scale so image covers entire canvas
+    scale = max(canvas_w / w, canvas_h / h)
     new_w = int(w * scale)
     new_h = int(h * scale)
-    resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_LANCZOS4)
+    resized = cv2.resize(img, (new_w, new_h),
+                         interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_LANCZOS4)
 
-    # Center-crop to exact target dimensions
-    x_start = (new_w - target_w) // 2
-    y_start = (new_h - target_h) // 2
-    cropped = resized[y_start:y_start + target_h, x_start:x_start + target_w]
+    # Center-crop to exact canvas size
+    x_start = (new_w - canvas_w) // 2
+    y_start = (new_h - canvas_h) // 2
+    cropped = resized[y_start:y_start + canvas_h, x_start:x_start + canvas_w]
 
-    print(f"  bg scaled {w}x{h} -> {new_w}x{new_h} (x{scale:.3f}), center-cropped to {target_w}x{target_h}")
+    print(f"  {label}: was {detected} ({w}x{h}), scaled to {new_w}x{new_h}, center-cropped to {canvas_w}x{canvas_h}")
     return cropped
+
+
+def compute_canvas_size(bg_img, gs_img):
+    """Compute the 9:16 canvas size.
+
+    Uses the largest height between the two images so neither is upscaled
+    more than necessary, then derives width from the 9:16 ratio.
+    """
+    bg_h = bg_img.shape[0]
+    gs_h = gs_img.shape[0]
+    canvas_h = max(bg_h, gs_h)
+    canvas_w = int(canvas_h * TARGET_RATIO_W / TARGET_RATIO_H)
+    # Ensure even dimensions for codec compatibility
+    canvas_w = canvas_w if canvas_w % 2 == 0 else canvas_w + 1
+    canvas_h = canvas_h if canvas_h % 2 == 0 else canvas_h + 1
+    return canvas_w, canvas_h
 
 
 def process_chromakey(bg_url, greenscreen_url, output_path,
                       spill_offset=None, min_diff=None, max_diff=None):
     """Process chromakey overlay. Returns (success, error_message, aspect_ratio) tuple.
 
-    The greenscreen image defines the output dimensions (it contains the text/overlays
-    that must not be cropped). The bg_image is scaled to fill and center-cropped
-    to match the greenscreen dimensions exactly.
+    Pipeline:
+    1. Download both images
+    2. Compute a 9:16 canvas from the largest height
+    3. Fit bg_image to the canvas (scale-to-fill + center-crop; no crop if already 9:16)
+    4. Fit greenscreen to the canvas (same logic; no crop if already 9:16)
+    5. Chromakey composite: green areas → show bg, non-green areas → keep text
     """
     print(f"  Downloading bg_image: {bg_url}")
     bg_img, bg_err = download_image(bg_url)
@@ -137,15 +177,19 @@ def process_chromakey(bg_url, greenscreen_url, output_path,
     elif gs_img.shape[2] == 4:
         gs_img = cv2.cvtColor(gs_img, cv2.COLOR_BGRA2BGR)
 
-    # Greenscreen defines the output dimensions (its text must not be cropped)
-    gs_h, gs_w = gs_img.shape[:2]
     bg_h, bg_w = bg_img.shape[:2]
-    print(f"  Dimensions: bg={bg_w}x{bg_h}, gs={gs_w}x{gs_h}")
+    gs_h, gs_w = gs_img.shape[:2]
+    print(f"  Original dimensions: bg={bg_w}x{bg_h}, gs={gs_w}x{gs_h}")
 
-    # Scale bg_image to fill greenscreen dimensions (cover + center-crop)
-    bg_img = scale_to_fill(bg_img, gs_w, gs_h)
+    # Step 1: Compute 9:16 canvas
+    canvas_w, canvas_h = compute_canvas_size(bg_img, gs_img)
+    print(f"  9:16 canvas: {canvas_w}x{canvas_h}")
 
-    # At this point bg_img and gs_img have the exact same dimensions
+    # Step 2: Fit both images to the canvas
+    bg_img = fit_to_canvas(bg_img, canvas_w, canvas_h, label="bg_image")
+    gs_img = fit_to_canvas(gs_img, canvas_w, canvas_h, label="greenscreen")
+
+    # Both images are now exactly canvas_w x canvas_h
     # Resolve per-item overrides or use defaults
     _min_diff = min_diff if min_diff is not None else MIN_DIFF
     _max_diff = max_diff if max_diff is not None else MAX_DIFF
