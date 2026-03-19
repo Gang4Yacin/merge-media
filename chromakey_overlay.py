@@ -19,10 +19,6 @@ HUE_HARD = 15.0      # Hard hue tolerance (degrees)
 HUE_SOFT = 10.0      # Soft falloff beyond hard tolerance
 SPILL_OFFSET = 5.0   # Green spill suppression offset (default, overridable per item)
 
-# Target aspect ratio for bg_image cropping
-TARGET_RATIO_W = 9
-TARGET_RATIO_H = 16
-
 
 def download_image(url):
     """Download an image from URL. Returns (image, error_message) tuple."""
@@ -86,40 +82,36 @@ def detect_aspect_ratio(width, height):
     return best_match
 
 
-def crop_to_9_16(img):
-    """Center-crop an image to 9:16 aspect ratio if it isn't already.
-    Returns the cropped image (or original if already 9:16)."""
+def scale_to_fill(img, target_w, target_h):
+    """Scale image to fill target dimensions (cover), then center-crop to exact size.
+
+    This ensures bg_image fully covers the greenscreen canvas with no
+    green borders, while preserving the center of the image.
+    """
     h, w = img.shape[:2]
-    current_ratio = w / h
-    target_ratio = TARGET_RATIO_W / TARGET_RATIO_H  # 0.5625
+    # Scale factor: pick the larger scale so the image covers the entire target
+    scale = max(target_w / w, target_h / h)
+    new_w = int(w * scale)
+    new_h = int(h * scale)
+    resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_LANCZOS4)
 
-    # Tolerance: if within 2% of 9:16, consider it already correct
-    if abs(current_ratio - target_ratio) / target_ratio < 0.02:
-        print(f"  bg_image already 9:16 ({w}x{h}), no crop needed")
-        return img
+    # Center-crop to exact target dimensions
+    x_start = (new_w - target_w) // 2
+    y_start = (new_h - target_h) // 2
+    cropped = resized[y_start:y_start + target_h, x_start:x_start + target_w]
 
-    detected = detect_aspect_ratio(w, h)
-    print(f"  bg_image is {detected} ({w}x{h}), cropping to 9:16...")
-
-    if current_ratio > target_ratio:
-        # Image is too wide → crop width (keep full height)
-        new_w = int(h * target_ratio)
-        x_start = (w - new_w) // 2
-        cropped = img[:, x_start:x_start + new_w]
-    else:
-        # Image is too tall → crop height (keep full width)
-        new_h = int(w / target_ratio)
-        y_start = (h - new_h) // 2
-        cropped = img[y_start:y_start + new_h, :]
-
-    ch, cw = cropped.shape[:2]
-    print(f"  Cropped to {cw}x{ch} (9:16)")
+    print(f"  bg scaled {w}x{h} -> {new_w}x{new_h} (x{scale:.3f}), center-cropped to {target_w}x{target_h}")
     return cropped
 
 
 def process_chromakey(bg_url, greenscreen_url, output_path,
                       spill_offset=None, min_diff=None, max_diff=None):
-    """Process chromakey overlay. Returns (success, error_message, aspect_ratio) tuple."""
+    """Process chromakey overlay. Returns (success, error_message, aspect_ratio) tuple.
+
+    The greenscreen image defines the output dimensions (it contains the text/overlays
+    that must not be cropped). The bg_image is scaled to fill and center-cropped
+    to match the greenscreen dimensions exactly.
+    """
     print(f"  Downloading bg_image: {bg_url}")
     bg_img, bg_err = download_image(bg_url)
     if bg_img is None:
@@ -145,37 +137,15 @@ def process_chromakey(bg_url, greenscreen_url, output_path,
     elif gs_img.shape[2] == 4:
         gs_img = cv2.cvtColor(gs_img, cv2.COLOR_BGRA2BGR)
 
-    # Crop bg_image to 9:16 if needed (measure actual ratio, not a flag)
-    bg_img = crop_to_9_16(bg_img)
-
-    # Center-align greenscreen on background canvas (no stretch/compress)
-    bg_h, bg_w = bg_img.shape[:2]
+    # Greenscreen defines the output dimensions (its text must not be cropped)
     gs_h, gs_w = gs_img.shape[:2]
+    bg_h, bg_w = bg_img.shape[:2]
     print(f"  Dimensions: bg={bg_w}x{bg_h}, gs={gs_w}x{gs_h}")
 
-    # Create a canvas the size of bg, filled with pure green (#00FF00 → BGR: 0,255,0)
-    # so that areas outside the greenscreen are keyed out as transparent
-    gs_canvas = np.full((bg_h, bg_w, 3), (0, 255, 0), dtype=np.uint8)
+    # Scale bg_image to fill greenscreen dimensions (cover + center-crop)
+    bg_img = scale_to_fill(bg_img, gs_w, gs_h)
 
-    # Calculate offsets to center the greenscreen on the canvas
-    x_offset = (bg_w - gs_w) // 2  # negative if gs is wider than bg
-    y_offset = (bg_h - gs_h) // 2  # negative if gs is taller than bg
-
-    # Source region (crop from gs if it overflows the canvas)
-    src_x1 = max(0, -x_offset)
-    src_y1 = max(0, -y_offset)
-    src_x2 = min(gs_w, bg_w - x_offset)
-    src_y2 = min(gs_h, bg_h - y_offset)
-
-    # Destination region on the canvas
-    dst_x1 = max(0, x_offset)
-    dst_y1 = max(0, y_offset)
-    dst_x2 = dst_x1 + (src_x2 - src_x1)
-    dst_y2 = dst_y1 + (src_y2 - src_y1)
-
-    gs_canvas[dst_y1:dst_y2, dst_x1:dst_x2] = gs_img[src_y1:src_y2, src_x1:src_x2]
-    gs_img = gs_canvas
-
+    # At this point bg_img and gs_img have the exact same dimensions
     # Resolve per-item overrides or use defaults
     _min_diff = min_diff if min_diff is not None else MIN_DIFF
     _max_diff = max_diff if max_diff is not None else MAX_DIFF
