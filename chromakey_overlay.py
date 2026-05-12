@@ -13,23 +13,48 @@ SUPABASE_PUBLIC_URL_PREFIX = "https://bksiaeiqzmoaxvkdtspn.supabase.co/storage/v
 SUPABASE_REST_URL = "https://bksiaeiqzmoaxvkdtspn.supabase.co/rest/v1"
 
 
+TEMPLATIZE_WEBHOOK_URL = "https://n8n.srv882539.hstgr.cloud/webhook/core-templatize-ads"
+
+
 def insert_overlay_template(token, payload):
     """Insert a row into OverlayTemplate via Supabase PostgREST.
-    Returns (success, error_message)."""
+    Returns (success, overlay_template_id_or_error)."""
     url = f"{SUPABASE_REST_URL}/OverlayTemplate"
     headers = {
         "apikey": token,
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
-        "Prefer": "return=minimal",
+        "Prefer": "return=representation",
     }
     try:
         r = requests.post(url, headers=headers, json=payload, timeout=30)
-        if r.status_code in (200, 201, 204):
-            return True, None
+        if r.status_code in (200, 201):
+            try:
+                body = r.json()
+                row = body[0] if isinstance(body, list) and body else body
+                ot_id = row.get("id") if isinstance(row, dict) else None
+                return True, ot_id
+            except Exception as e:
+                return False, f"Insert OK but failed to parse response: {e}"
         return False, f"HTTP {r.status_code}: {r.text[:300]}"
     except Exception as e:
         return False, f"Insert error: {e}"
+
+
+def notify_templatize(overlay_template_id):
+    """POST OverlayTemplate.id to the core-templatize-ads webhook.
+    Returns (success, error_message)."""
+    try:
+        r = requests.post(
+            TEMPLATIZE_WEBHOOK_URL,
+            json={"overlay_template_id": overlay_template_id},
+            timeout=30,
+        )
+        if 200 <= r.status_code < 300:
+            return True, None
+        return False, f"HTTP {r.status_code}: {r.text[:300]}"
+    except Exception as e:
+        return False, f"Webhook error: {e}"
 
 # Chromakey tuning parameters
 MIN_DIFF = 10.0      # Below this green-difference = fully opaque (foreground)
@@ -355,17 +380,26 @@ def main():
                     "product_brand_media_id": item.get("product_brand_media_id"),
                     "status": "VALIDATED",
                 }
-                ok_ins, ins_err = insert_overlay_template(supabase_token, ot_payload)
+                ok_ins, ins_result = insert_overlay_template(supabase_token, ot_payload)
                 if ok_ins:
-                    print(f"  Inserted OverlayTemplate (status=VALIDATED)")
+                    ot_id = ins_result
+                    print(f"  Inserted OverlayTemplate id={ot_id} (status=VALIDATED)")
+                    item["overlay_template_id"] = ot_id
                     results.append(item)
+
+                    if ot_id:
+                        ok_nt, nt_err = notify_templatize(ot_id)
+                        if ok_nt:
+                            print(f"  Notified core-templatize-ads webhook")
+                        else:
+                            print(f"  Webhook notify failed (non-fatal): {nt_err}")
                 else:
-                    print(f"  Failed to insert OverlayTemplate: {ins_err}")
+                    print(f"  Failed to insert OverlayTemplate: {ins_result}")
                     errors.append({
                         "index": idx,
                         "bg_image": bg_url,
                         "greenscreen_image": gs_url,
-                        "error": f"OverlayTemplate insert failed: {ins_err}",
+                        "error": f"OverlayTemplate insert failed: {ins_result}",
                     })
             else:
                 upload_err = f"Failed to upload to Supabase (file: {filename})"
