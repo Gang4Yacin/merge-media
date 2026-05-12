@@ -10,6 +10,26 @@ import math
 
 SUPABASE_URL = "https://bksiaeiqzmoaxvkdtspn.supabase.co/storage/v1/object/n8n-image-generation/images"
 SUPABASE_PUBLIC_URL_PREFIX = "https://bksiaeiqzmoaxvkdtspn.supabase.co/storage/v1/object/public/n8n-image-generation/images"
+SUPABASE_REST_URL = "https://bksiaeiqzmoaxvkdtspn.supabase.co/rest/v1"
+
+
+def insert_overlay_template(token, payload):
+    """Insert a row into OverlayTemplate via Supabase PostgREST.
+    Returns (success, error_message)."""
+    url = f"{SUPABASE_REST_URL}/OverlayTemplate"
+    headers = {
+        "apikey": token,
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal",
+    }
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=30)
+        if r.status_code in (200, 201, 204):
+            return True, None
+        return False, f"HTTP {r.status_code}: {r.text[:300]}"
+    except Exception as e:
+        return False, f"Insert error: {e}"
 
 # Chromakey tuning parameters
 MIN_DIFF = 10.0      # Below this green-difference = fully opaque (foreground)
@@ -325,7 +345,28 @@ def main():
             if public_url:
                 item["final_image"] = public_url
                 item["detected_format"] = detected_format
-                results.append(item)
+
+                ot_payload = {
+                    "url": public_url,
+                    "format": detected_format,
+                    "number_text_area": item.get("number_text_area"),
+                    "media_type": item.get("media_type"),
+                    "green_template_id": item.get("template_id"),
+                    "product_brand_media_id": item.get("product_brand_media_id"),
+                    "status": "VALIDATED",
+                }
+                ok_ins, ins_err = insert_overlay_template(supabase_token, ot_payload)
+                if ok_ins:
+                    print(f"  Inserted OverlayTemplate (status=VALIDATED)")
+                    results.append(item)
+                else:
+                    print(f"  Failed to insert OverlayTemplate: {ins_err}")
+                    errors.append({
+                        "index": idx,
+                        "bg_image": bg_url,
+                        "greenscreen_image": gs_url,
+                        "error": f"OverlayTemplate insert failed: {ins_err}",
+                    })
             else:
                 upload_err = f"Failed to upload to Supabase (file: {filename})"
                 print(f"  {upload_err}")
