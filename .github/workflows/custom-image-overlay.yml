@@ -26,6 +26,14 @@ jobs:
           pip install opencv-python-headless numpy requests playwright
           python -m playwright install --with-deps chromium
 
+      - name: Download Apple Color Emoji font (iOS-style emoji)
+        run: |
+          URL=$(curl -fsSL https://api.github.com/repos/samuelngs/apple-emoji-linux/releases/latest \
+            | grep -o 'https://[^"]*AppleColorEmoji-Linux\.ttf' | head -1)
+          echo "Emoji font: $URL"
+          curl -fsSL -o fonts/AppleColorEmoji.ttf "$URL"
+          ls -la fonts/AppleColorEmoji.ttf
+
       - name: Save JSON to file
         env:
           IMAGES_JSON: ${{ github.event.inputs.images_json }}

@@ -35,6 +35,9 @@ import requests
 
 FONT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                          "fonts", "Quicksand-Regular.ttf")
+# Apple Color Emoji (iOS-style glyphs). Downloaded by the CI workflow.
+EMOJI_FONT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "fonts", "AppleColorEmoji.ttf")
 
 SUPABASE_BUCKET = "growth-marketing"
 SUPABASE_HOST = "https://bksiaeiqzmoaxvkdtspn.supabase.co"
@@ -89,9 +92,12 @@ def hex_to_bgr(color):
 
 
 def find_color_zone(bg, color, tolerance):
-    """Return (x, y, w, h) bounding box of the largest region matching color.
+    """Locate the largest region matching color in the pristine template.
 
-    Returns (None, error) if no zone is found.
+    Returns ((x, y, w, h), zone_mask), where zone_mask is a uint8 mask the
+    same size as bg (255 = inside the zone). This preserves the zone's real
+    shape (e.g. a circular avatar) instead of its rectangular bounding box.
+    Returns (None, error_str) if no usable zone is found.
     """
     b, g, r = hex_to_bgr(color)
     lower = np.array([max(0, b - tolerance),
@@ -109,7 +115,12 @@ def find_color_zone(bg, color, tolerance):
     if cv2.contourArea(largest) < 4:
         return None, f"Color zone for {color} is too small"
     x, y, w, h = cv2.boundingRect(largest)
-    return (x, y, w, h), None
+    # Filled mask of the actual zone shape (anti-aliased edges included via
+    # the original color mask, holes closed so the fill is solid).
+    zone_mask = np.zeros(bg.shape[:2], dtype=np.uint8)
+    cv2.drawContours(zone_mask, [largest], -1, 255, thickness=cv2.FILLED)
+    zone_mask = cv2.bitwise_or(zone_mask, cv2.bitwise_and(mask, zone_mask))
+    return (x, y, w, h), zone_mask
 
 
 def fit_cover(img, box_w, box_h):
@@ -126,7 +137,13 @@ def fit_cover(img, box_w, box_h):
 
 
 def place_photos(bg, photos, errors, idx):
-    """Paste each photo into its color zone. Mutates bg in place."""
+    """Fill each color zone with its photo, clipped to the zone's real shape.
+
+    All zones are detected on the *pristine* template first, so a photo
+    pasted into one zone can never erase the color of a zone processed
+    later (root cause of zones being silently skipped). Mutates bg.
+    """
+    template = bg.copy()
     for p_i, photo in enumerate(photos or []):
         url = photo.get("url")
         color = photo.get("color")
@@ -135,9 +152,10 @@ def place_photos(bg, photos, errors, idx):
                             "error": "Missing url or color"})
             continue
         tol = int(photo.get("tolerance", DEFAULT_COLOR_TOLERANCE))
-        zone, err = find_color_zone(bg, color, tol)
+        zone, zone_mask = find_color_zone(template, color, tol)
         if zone is None:
-            errors.append({"index": idx, "photo": p_i, "error": err})
+            # zone_mask holds the error string in the failure case.
+            errors.append({"index": idx, "photo": p_i, "error": zone_mask})
             continue
         x, y, w, h = zone
         img, derr = download_image(url)
@@ -146,13 +164,35 @@ def place_photos(bg, photos, errors, idx):
                            "error": f"Failed to download photo: {derr}"})
             continue
         img = to_bgr(img)
-        bg[y:y + h, x:x + w] = fit_cover(img, w, h)
+        filled = fit_cover(img, w, h)
+        # Soft alpha from the zone mask -> clean (e.g. circular) edges.
+        roi_mask = zone_mask[y:y + h, x:x + w].astype(np.float32) / 255.0
+        roi_mask = cv2.GaussianBlur(roi_mask, (0, 0), sigmaX=0.8)
+        a = roi_mask[:, :, None]
+        roi = bg[y:y + h, x:x + w].astype(np.float32)
+        bg[y:y + h, x:x + w] = np.clip(
+            filled.astype(np.float32) * a + roi * (1.0 - a),
+            0, 255).astype(np.uint8)
 
 
 def _font_data_uri():
     with open(FONT_PATH, "rb") as f:
         b64 = base64.b64encode(f.read()).decode("ascii")
     return f"data:font/ttf;base64,{b64}"
+
+
+def _emoji_face_css():
+    """@font-face for Apple Color Emoji, or '' if the font is unavailable.
+
+    Embedded as a data URI so Chromium renders iOS-style emoji glyphs
+    regardless of the CI runner's system emoji font (Noto/Android).
+    """
+    if not os.path.exists(EMOJI_FONT_PATH):
+        return ""
+    with open(EMOJI_FONT_PATH, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode("ascii")
+    return ("@font-face { font-family:'Apple Color Emoji'; "
+            "src:url('data:font/ttf;base64,%s'); }" % b64)
 
 
 def render_text_png(page, text, box_w, box_h, font_size):
@@ -164,16 +204,19 @@ def render_text_png(page, text, box_w, box_h, font_size):
     html = """<!DOCTYPE html><html><head><meta charset="utf-8">
 <style>
   @font-face {{ font-family:'Quicksand'; src:url('{font_uri}') format('truetype'); }}
+  {emoji_face}
   html,body {{ margin:0; padding:0; background:transparent; }}
   #wrap {{ width:{w}px; height:{h}px; display:flex; align-items:center;
            box-sizing:border-box; }}
-  #txt {{ width:100%; font-family:'Quicksand', sans-serif; color:{color};
-          text-align:left; white-space:pre-wrap; overflow-wrap:break-word;
-          word-break:break-word; line-height:{lh}; }}
+  #txt {{ width:100%; font-family:'Quicksand', 'Apple Color Emoji', sans-serif;
+          color:{color}; text-align:left; white-space:pre-wrap;
+          overflow-wrap:break-word; word-break:break-word;
+          line-height:{lh}; }}
 </style></head><body>
 <div id="wrap"><div id="txt"></div></div>
-</body></html>""".format(font_uri=font_uri, w=box_w, h=box_h,
-                          color=TEXT_COLOR, lh=LINE_HEIGHT)
+</body></html>""".format(font_uri=font_uri, emoji_face=_emoji_face_css(),
+                          w=box_w, h=box_h, color=TEXT_COLOR,
+                          lh=LINE_HEIGHT)
 
     page.set_viewport_size({"width": box_w, "height": box_h})
     page.set_content(html, wait_until="load")
