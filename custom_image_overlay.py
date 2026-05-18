@@ -47,6 +47,10 @@ SUPABASE_PUBLIC_PREFIX = (
 
 DEFAULT_FONT_SIZE = 19
 DEFAULT_COLOR_TOLERANCE = 12
+# Grow the detected zone by this many px so the photo also covers the
+# anti-aliased fringe of the color shape (semi-tinted border pixels fall
+# outside the tolerance mask, leaving a thin colored line otherwise).
+DEFAULT_EDGE_GROW = 3
 MIN_FONT_SIZE = 6
 TEXT_COLOR = "#000000"          # fixed for now (black)
 LINE_HEIGHT = 1.3
@@ -91,12 +95,14 @@ def hex_to_bgr(color):
     return (b, g, r)
 
 
-def find_color_zone(bg, color, tolerance):
+def find_color_zone(bg, color, tolerance, edge_grow=DEFAULT_EDGE_GROW):
     """Locate the largest region matching color in the pristine template.
 
     Returns ((x, y, w, h), zone_mask), where zone_mask is a uint8 mask the
     same size as bg (255 = inside the zone). This preserves the zone's real
     shape (e.g. a circular avatar) instead of its rectangular bounding box.
+    The mask is dilated by `edge_grow` px so the photo also covers the
+    anti-aliased border of the color shape (no residual key-color fringe).
     Returns (None, error_str) if no usable zone is found.
     """
     b, g, r = hex_to_bgr(color)
@@ -114,12 +120,25 @@ def find_color_zone(bg, color, tolerance):
     largest = max(contours, key=cv2.contourArea)
     if cv2.contourArea(largest) < 4:
         return None, f"Color zone for {color} is too small"
-    x, y, w, h = cv2.boundingRect(largest)
     # Filled mask of the actual zone shape (anti-aliased edges included via
     # the original color mask, holes closed so the fill is solid).
     zone_mask = np.zeros(bg.shape[:2], dtype=np.uint8)
     cv2.drawContours(zone_mask, [largest], -1, 255, thickness=cv2.FILLED)
     zone_mask = cv2.bitwise_or(zone_mask, cv2.bitwise_and(mask, zone_mask))
+    # Grow the shape outward to swallow the anti-aliased key-color fringe.
+    if edge_grow > 0:
+        k = 2 * edge_grow + 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        zone_mask = cv2.dilate(zone_mask, kernel)
+    # Bounding box from the (possibly grown) mask, clamped to the image.
+    ys, xs = np.where(zone_mask > 0)
+    img_h, img_w = bg.shape[:2]
+    x = int(xs.min())
+    y = int(ys.min())
+    w = int(xs.max()) - x + 1
+    h = int(ys.max()) - y + 1
+    w = min(w, img_w - x)
+    h = min(h, img_h - y)
     return (x, y, w, h), zone_mask
 
 
@@ -152,7 +171,8 @@ def place_photos(bg, photos, errors, idx):
                             "error": "Missing url or color"})
             continue
         tol = int(photo.get("tolerance", DEFAULT_COLOR_TOLERANCE))
-        zone, zone_mask = find_color_zone(template, color, tol)
+        grow = int(photo.get("edge_grow", DEFAULT_EDGE_GROW))
+        zone, zone_mask = find_color_zone(template, color, tol, grow)
         if zone is None:
             # zone_mask holds the error string in the failure case.
             errors.append({"index": idx, "photo": p_i, "error": zone_mask})
