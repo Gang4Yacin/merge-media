@@ -7,10 +7,6 @@ on:
         description: "JSON array of items {bg_image, photos[], texts[], font_size}"
         required: true
         type: string
-      resumeUrl:
-        description: "n8n resume URL (automatic)"
-        required: false
-        type: string
 
 jobs:
   custom-overlay-job:
@@ -37,12 +33,9 @@ jobs:
           printf '%s' "$IMAGES_JSON" > input.json
 
       - name: Run Custom Overlay Script
+        env:
+          SUPABASE_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
         run: |
           python custom_image_overlay.py --input input.json --output results.json
-
-      - name: Send Callback to n8n (if resumeUrl provided)
-        if: ${{ github.event.inputs.resumeUrl != '' }}
-        run: |
-          curl -X POST "${{ github.event.inputs.resumeUrl }}" \
-            -H "Content-Type: application/json" \
-            -d @results.json
+          echo "---- results.json ----"
+          cat results.json

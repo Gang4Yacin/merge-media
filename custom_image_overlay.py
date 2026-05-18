@@ -7,7 +7,8 @@ For each input item:
   3. For each {text_b64, x, y, w, h} text zone: render the text with Playwright
      (Quicksand font, color emoji, auto word-wrap, auto-shrink to fit the box)
      and alpha-composite it onto the image at (x, y).
-  4. Return the final PNG base64-encoded (no Supabase upload, no DB insert).
+  4. Upload the final PNG to the Supabase "growth-marketing" bucket and
+     return its public URL (no callback to n8n, no DB insert).
 
 Input JSON (list of items):
 [
@@ -26,6 +27,7 @@ import base64
 import json
 import os
 import sys
+import uuid
 
 import cv2
 import numpy as np
@@ -33,6 +35,12 @@ import requests
 
 FONT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                          "fonts", "Quicksand-Regular.ttf")
+
+SUPABASE_BUCKET = "growth-marketing"
+SUPABASE_HOST = "https://bksiaeiqzmoaxvkdtspn.supabase.co"
+SUPABASE_UPLOAD_URL = f"{SUPABASE_HOST}/storage/v1/object/{SUPABASE_BUCKET}"
+SUPABASE_PUBLIC_PREFIX = (
+    f"{SUPABASE_HOST}/storage/v1/object/public/{SUPABASE_BUCKET}")
 
 DEFAULT_FONT_SIZE = 19
 DEFAULT_COLOR_TOLERANCE = 12
@@ -217,8 +225,26 @@ def composite_text(bg, png_bytes, x, y):
     return None
 
 
-def process_item(page, item, idx, errors):
-    """Returns (image_base64, error_message)."""
+def upload_to_supabase(png_bytes, token):
+    """Upload PNG bytes to the growth-marketing bucket. Returns (url, error)."""
+    filename = f"images/custom_{uuid.uuid4().hex}.png"
+    url = f"{SUPABASE_UPLOAD_URL}/{filename}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "image/png",
+        "x-upsert": "true",
+    }
+    try:
+        r = requests.post(url, headers=headers, data=png_bytes, timeout=60)
+        if r.status_code in (200, 201):
+            return f"{SUPABASE_PUBLIC_PREFIX}/{filename}", None
+        return None, f"Supabase upload HTTP {r.status_code}: {r.text[:300]}"
+    except Exception as e:
+        return None, f"Supabase upload error: {e}"
+
+
+def process_item(page, item, idx, errors, token):
+    """Returns (public_url, error_message)."""
     bg_url = item.get("bg_image")
     if not bg_url:
         return None, "Missing bg_image"
@@ -253,7 +279,7 @@ def process_item(page, item, idx, errors):
     ok, buf = cv2.imencode(".png", bg)
     if not ok:
         return None, "Failed to encode final PNG"
-    return base64.b64encode(buf.tobytes()).decode("ascii"), None
+    return upload_to_supabase(buf.tobytes(), token)
 
 
 def main():
@@ -262,6 +288,11 @@ def main():
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", default="results.json")
     args = parser.parse_args()
+
+    token = os.environ.get("SUPABASE_TOKEN")
+    if not token:
+        print("Error: SUPABASE_TOKEN environment variable is not set.")
+        sys.exit(1)
 
     with open(args.input, "r", encoding="utf-8") as f:
         content = f.read().strip()
@@ -290,13 +321,12 @@ def main():
         for idx, item in enumerate(items):
             print(f"\n--- Processing item {idx + 1}/{len(items)} ---")
             try:
-                img_b64, err = process_item(page, item, idx, errors)
+                url, err = process_item(page, item, idx, errors, token)
             except Exception as e:
-                img_b64, err = None, f"Unhandled error: {e}"
-            if img_b64:
-                results.append({"index": idx, "image_base64": img_b64,
-                                "format": "png"})
-                print(f"  OK ({len(img_b64)} b64 chars)")
+                url, err = None, f"Unhandled error: {e}"
+            if url:
+                results.append({"index": idx, "final_image": url})
+                print(f"  OK -> {url}")
             else:
                 errors.append({"index": idx, "error": err})
                 print(f"  FAILED: {err}")
@@ -305,7 +335,7 @@ def main():
     summary = f"{len(results)}/{len(items)} succeeded, {len(errors)} errors"
     out = {
         "results": results,
-        "image_base64": results[0]["image_base64"] if results else None,
+        "final_image": results[0]["final_image"] if results else None,
         "errors": errors,
         "summary": summary,
     }
