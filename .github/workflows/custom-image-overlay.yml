@@ -1,0 +1,48 @@
+name: Custom Image Overlay Workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      images_json:
+        description: "JSON array of items {bg_image, photos[], texts[], font_size}"
+        required: true
+        type: string
+      resumeUrl:
+        description: "n8n resume URL (automatic)"
+        required: false
+        type: string
+
+jobs:
+  custom-overlay-job:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install opencv-python-headless numpy requests playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Save JSON to file
+        env:
+          IMAGES_JSON: ${{ github.event.inputs.images_json }}
+        run: |
+          printf '%s' "$IMAGES_JSON" > input.json
+
+      - name: Run Custom Overlay Script
+        run: |
+          python custom_image_overlay.py --input input.json --output results.json
+
+      - name: Send Callback to n8n (if resumeUrl provided)
+        if: ${{ github.event.inputs.resumeUrl != '' }}
+        run: |
+          curl -X POST "${{ github.event.inputs.resumeUrl }}" \
+            -H "Content-Type: application/json" \
+            -d @results.json
