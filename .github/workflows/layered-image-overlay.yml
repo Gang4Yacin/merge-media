@@ -1,0 +1,49 @@
+name: Layered Image Overlay Workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      layers_json:
+        description: "JSON array of ordered layers (background, chroma_photo, overlay, text) — or list of {layers:[...]} items"
+        required: true
+        type: string
+
+jobs:
+  layered-overlay-job:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install opencv-python-headless numpy requests playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Download Apple Color Emoji font (iOS-style emoji)
+        run: |
+          URL=$(curl -fsSL https://api.github.com/repos/samuelngs/apple-emoji-linux/releases/latest \
+            | grep -o 'https://[^"]*AppleColorEmoji-Linux\.ttf' | head -1)
+          echo "Emoji font: $URL"
+          curl -fsSL -o fonts/AppleColorEmoji.ttf "$URL"
+          ls -la fonts/AppleColorEmoji.ttf
+
+      - name: Save JSON to file
+        env:
+          LAYERS_JSON: ${{ github.event.inputs.layers_json }}
+        run: |
+          printf '%s' "$LAYERS_JSON" > input.json
+
+      - name: Run Layered Overlay Script
+        env:
+          SUPABASE_TOKEN: ${{ secrets.SUPABASE_TOKEN }}
+        run: |
+          python layered_image_overlay.py --input input.json --output results.json
+          echo "---- results.json ----"
+          cat results.json
