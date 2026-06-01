@@ -16,10 +16,14 @@ Layer types
 - overlay      {url, fit?, opacity?}
       Draws an image full-bleed over the whole canvas. Honors PNG transparency.
       fit: "cover" (default) | "contain" | "stretch". opacity: 0..1 (default 1).
-- text         {text_b64, x, y, w, h, color?, bold?, font?, font_size?}
-      Renders text with Playwright (auto word-wrap, auto-shrink, color emoji)
-      and alpha-composites it at (x, y). color (default #000000), bold (default
-      false), font ("Rubik" default, or "Quicksand"), font_size (default 19).
+- image        {url, x, y, w, h, shape?, opacity?}
+      Places an image at (x, y) sized (w, h), masked to a shape. shape:
+      "square" (default) | "circle". Source transparency preserved.
+- text         {text_b64, x, y, w, h, color?, bold?, font?, font_size?, autoshrink?}
+      Renders text with Playwright (word-wrap, color emoji) and composites it
+      at (x, y). color (default #000000), bold (default false), font ("Rubik"
+      default, or "Quicksand"), font_size (default 19). autoshrink (default
+      true) shrinks the text to fit the box; false applies font_size exactly.
 
 Input JSON — any of:
   { "layers_json": "<json string of a layer array>" }
@@ -247,6 +251,43 @@ def apply_overlay(bg, layer):
 
 
 # --------------------------------------------------------------------------- #
+# Layer: image (free placement at x/y, sized w/h, square or circle)
+# --------------------------------------------------------------------------- #
+def apply_image(bg, layer):
+    """Place an image at (x, y) sized (w, h), masked to a shape.
+
+    shape: "square" (default, rectangle) | "circle" (ellipse inscribed in the
+    box; a true circle when w == h). The source image's own transparency is
+    preserved and combined with the shape mask. opacity (0..1) optional.
+    """
+    url = layer.get("url")
+    if not url:
+        return "image: missing url"
+    try:
+        x, y = int(layer["x"]), int(layer["y"])
+        w, h = int(layer["w"]), int(layer["h"])
+    except (KeyError, ValueError, TypeError) as e:
+        return f"image: bad coordinates: {e}"
+    if w <= 0 or h <= 0:
+        return "image: w and h must be positive"
+    shape = (layer.get("shape") or "square").lower()
+    opacity = float(layer.get("opacity", 1.0))
+    img, derr = download_image(url, keep_alpha=True)
+    if img is None:
+        return f"image: failed to download: {derr}"
+    img = fit_cover(to_bgra(img), w, h)  # exactly (h, w), 4 channels
+    if shape in ("circle", "ellipse", "round"):
+        mask = np.zeros((h, w), dtype=np.uint8)
+        cv2.ellipse(mask, (w // 2, h // 2), (max(1, w // 2), max(1, h // 2)),
+                    0, 0, 360, 255, -1)
+        mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=0.8)
+        src_a = img[:, :, 3].astype(np.float32)
+        img[:, :, 3] = (src_a * (mask.astype(np.float32) / 255.0)).astype(np.uint8)
+    alpha_composite(bg, img, x, y, opacity)
+    return None
+
+
+# --------------------------------------------------------------------------- #
 # Layer: text
 # --------------------------------------------------------------------------- #
 def _font_data_uri(font_name):
@@ -266,8 +307,14 @@ def _emoji_face_css():
             "src:url('data:font/ttf;base64,%s'); }" % b64)
 
 
-def render_text_png(page, text, box_w, box_h, font_size, color, bold, font_name):
-    """Render text in a box_w x box_h transparent PNG with auto-shrink."""
+def render_text_png(page, text, box_w, box_h, font_size, color, bold,
+                    font_name, autoshrink=True):
+    """Render text in a box_w x box_h transparent PNG.
+
+    font_size is the requested size. When autoshrink is True (default), the
+    size is reduced until the text fits the box; when False, font_size is
+    applied exactly (the text may overflow the box).
+    """
     font_uri = _font_data_uri(font_name)
     weight = 700 if bold else 400
     html = """<!DOCTYPE html><html><head><meta charset="utf-8">
@@ -293,21 +340,44 @@ def render_text_png(page, text, box_w, box_h, font_size, color, bold, font_name)
     page.evaluate("async () => { await document.fonts.ready; }")
     page.evaluate("(t) => { document.getElementById('txt').textContent = t; }",
                   text)
-    page.evaluate(
-        """({fs, minFs}) => {
-            const wrap = document.getElementById('wrap');
-            const txt = document.getElementById('txt');
-            let size = fs;
-            txt.style.fontSize = size + 'px';
-            while (size > minFs &&
-                   (txt.scrollHeight > wrap.clientHeight ||
-                    txt.scrollWidth  > wrap.clientWidth)) {
-                size -= 1;
+    if autoshrink:
+        # Shrink the font until the text fits the box (centered in the box).
+        page.evaluate(
+            """({fs, minFs}) => {
+                const wrap = document.getElementById('wrap');
+                const txt = document.getElementById('txt');
+                let size = fs;
                 txt.style.fontSize = size + 'px';
-            }
-        }""",
-        {"fs": int(font_size), "minFs": MIN_FONT_SIZE},
-    )
+                while (size > minFs &&
+                       (txt.scrollHeight > wrap.clientHeight ||
+                        txt.scrollWidth  > wrap.clientWidth)) {
+                    size -= 1;
+                    txt.style.fontSize = size + 'px';
+                }
+            }""",
+            {"fs": int(font_size), "minFs": MIN_FONT_SIZE},
+        )
+    else:
+        # Apply the exact font size; let the box grow downward so the text is
+        # never clipped (top-left anchored, width still wraps at box_w).
+        page.evaluate(
+            """(fs) => {
+                const wrap = document.getElementById('wrap');
+                const txt = document.getElementById('txt');
+                txt.style.fontSize = fs + 'px';
+                wrap.style.height = 'auto';
+                wrap.style.alignItems = 'flex-start';
+            }""",
+            int(font_size),
+        )
+        dims = page.evaluate(
+            """() => {
+                const txt = document.getElementById('txt');
+                return {w: Math.ceil(txt.scrollWidth),
+                        h: Math.ceil(txt.scrollHeight)};
+            }""")
+        page.set_viewport_size({"width": max(box_w, dims["w"]),
+                                "height": max(box_h, dims["h"])})
     return page.screenshot(omit_background=True)
 
 
@@ -330,7 +400,9 @@ def apply_text(bg, layer, page):
     bold = bool(layer.get("bold", False))
     font_name = layer.get("font") or DEFAULT_FONT
     font_size = layer.get("font_size") or DEFAULT_FONT_SIZE
-    png = render_text_png(page, text, w, h, font_size, color, bold, font_name)
+    autoshrink = bool(layer.get("autoshrink", True))
+    png = render_text_png(page, text, w, h, font_size, color, bold, font_name,
+                          autoshrink)
     overlay = cv2.imdecode(np.frombuffer(png, dtype=np.uint8),
                            cv2.IMREAD_UNCHANGED)
     if overlay is None:
@@ -399,6 +471,8 @@ def process_item(page, layers, idx, errors, token):
             err = apply_chroma_photo(bg, layer)
         elif ltype == "overlay":
             err = apply_overlay(bg, layer)
+        elif ltype == "image":
+            err = apply_image(bg, layer)
         elif ltype == "text":
             err = apply_text(bg, layer, page)
         else:
