@@ -375,15 +375,16 @@ def main():
                     "url": public_url,
                     "format": detected_format,
                     "number_text_area": item.get("number_text_area"),
-                    "media_type": item.get("media_type"),
                     "green_template_id": item.get("template_id"),
                     "product_brand_media_id": item.get("product_brand_media_id"),
                     "status": "VALIDATED",
+                    # Copy of GreenTemplate.analysis used for this overlay (jsonb) or None
+                    "analysis": item.get("analysis"),
+                    # FK derived from the input BrandMedia link tables (or None)
+                    "whitelisting_id": item.get("whitelisting_id"),
+                    "event_id": item.get("event_id"),
+                    "customer_profile_id": item.get("customer_profile_id"),
                 }
-                if item.get("event_id"):
-                    ot_payload["event_id"] = item["event_id"]
-                if item.get("customer_profile_id"):
-                    ot_payload["customer_profile_id"] = item["customer_profile_id"]
                 ok_ins, ins_result = insert_overlay_template(supabase_token, ot_payload)
                 if ok_ins:
                     ot_id = ins_result
