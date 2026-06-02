@@ -381,7 +381,7 @@ def main():
                     # Copy of GreenTemplate.analysis used for this overlay (jsonb) or None
                     "analysis": item.get("analysis"),
                     # FK derived from the input BrandMedia link tables (or None)
-                    "whitelisting_id": item.get("whitelisting_id"),
+                    "whitelist_client_id": item.get("whitelist_client_id"),
                     "event_id": item.get("event_id"),
                     "customer_profile_id": item.get("customer_profile_id"),
                 }
