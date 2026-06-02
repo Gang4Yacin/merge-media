@@ -13,7 +13,7 @@ SUPABASE_PUBLIC_URL_PREFIX = "https://bksiaeiqzmoaxvkdtspn.supabase.co/storage/v
 SUPABASE_REST_URL = "https://bksiaeiqzmoaxvkdtspn.supabase.co/rest/v1"
 
 
-TEMPLATIZE_WEBHOOK_URL = "https://n8n.srv882539.hstgr.cloud/webhook/core-templatize-ads"
+GENERATE_ADS_WEBHOOK_URL = "https://n8n.srv882539.hstgr.cloud/webhook/core-v3-generate-ads"
 
 
 def insert_overlay_template(token, payload):
@@ -41,12 +41,12 @@ def insert_overlay_template(token, payload):
         return False, f"Insert error: {e}"
 
 
-def notify_templatize(overlay_template_id):
-    """POST OverlayTemplate.id to the core-templatize-ads webhook.
+def notify_generate_ads(overlay_template_id):
+    """POST OverlayTemplate.id to the 5- CORE V3 Generate Ads webhook.
     Returns (success, error_message)."""
     try:
         r = requests.post(
-            TEMPLATIZE_WEBHOOK_URL,
+            GENERATE_ADS_WEBHOOK_URL,
             json={"overlay_template_id": overlay_template_id},
             timeout=30,
         )
@@ -393,9 +393,9 @@ def main():
                     results.append(item)
 
                     if ot_id:
-                        ok_nt, nt_err = notify_templatize(ot_id)
+                        ok_nt, nt_err = notify_generate_ads(ot_id)
                         if ok_nt:
-                            print(f"  Notified core-templatize-ads webhook")
+                            print(f"  Notified core-v3-generate-ads webhook")
                         else:
                             print(f"  Webhook notify failed (non-fatal): {nt_err}")
                 else:
