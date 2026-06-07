@@ -60,6 +60,7 @@ SUPABASE_HOST = "https://bksiaeiqzmoaxvkdtspn.supabase.co"
 SUPABASE_UPLOAD_URL = f"{SUPABASE_HOST}/storage/v1/object/{SUPABASE_BUCKET}"
 SUPABASE_PUBLIC_PREFIX = (
     f"{SUPABASE_HOST}/storage/v1/object/public/{SUPABASE_BUCKET}")
+SUPABASE_REST_URL = f"{SUPABASE_HOST}/rest/v1"
 
 DEFAULT_FONT_SIZE = 19
 DEFAULT_COLOR_TOLERANCE = 12
@@ -488,6 +489,47 @@ def process_item(page, layers, idx, errors, token):
     return upload_to_supabase(buf.tobytes(), token)
 
 
+def extract_company_id(data):
+    """Return the optional top-level company_id from any accepted input shape.
+
+    Mirrors normalize_items' unwrapping (which discards top-level keys) so we
+    can recover company_id whether it sits next to "layers" or is embedded in
+    the "layers_json" string. Returns None when absent."""
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except Exception:
+            return None
+    if isinstance(data, dict):
+        if data.get("company_id"):
+            return data["company_id"]
+        if "layers_json" in data:
+            return extract_company_id(data["layers_json"])
+    return None
+
+
+def update_growth_company_image(company_id, image_url, token):
+    """PATCH growth_company.custom_image_url for the given company.
+
+    Direct Supabase REST call (token must allow the write). Never raises:
+    returns (ok, error_message)."""
+    url = f"{SUPABASE_REST_URL}/growth_company?id=eq.{company_id}"
+    headers = {
+        "apikey": token,
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal",
+    }
+    try:
+        r = requests.patch(url, headers=headers,
+                           json={"custom_image_url": image_url}, timeout=30)
+        if r.status_code in (200, 204):
+            return True, None
+        return False, f"growth_company PATCH HTTP {r.status_code}: {r.text[:300]}"
+    except Exception as e:
+        return False, f"growth_company PATCH error: {e}"
+
+
 def normalize_items(data):
     """Normalize any accepted input shape into a list of layer-lists."""
     if isinstance(data, dict):
@@ -527,10 +569,14 @@ def main():
         content = f.read().strip()
     print(f"Raw input (first 120 chars): {content[:120]}")
     try:
-        items = normalize_items(json.loads(content))
+        parsed = json.loads(content)
+        items = normalize_items(parsed)
     except Exception as e:
         print(f"Error parsing JSON input: {e}")
         sys.exit(1)
+    company_id = extract_company_id(parsed)
+    if company_id:
+        print(f"company_id provided: {company_id}")
 
     results, errors = [], []
 
@@ -560,6 +606,23 @@ def main():
         "errors": errors,
         "summary": summary,
     }
+
+    # Optional: link the generated image back to its growth_company record.
+    # The image is already uploaded; a failed PATCH must not fail the run.
+    if company_id and results:
+        image_url = results[0]["final_image"]
+        ok, cb_err = update_growth_company_image(company_id, image_url, token)
+        out["growth_company_update"] = {
+            "company_id": company_id,
+            "custom_image_url": image_url,
+            "ok": ok,
+            "error": cb_err,
+        }
+        if ok:
+            print(f"growth_company {company_id} custom_image_url -> {image_url}")
+        else:
+            print(f"  WARNING growth_company update failed: {cb_err}")
+
     with open(args.output, "w", encoding="utf-8") as f:
         json.dump(out, f)
     print(f"\n{summary}. Output saved to {args.output}")
