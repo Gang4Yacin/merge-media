@@ -37,6 +37,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import sys
 import uuid
 
@@ -61,6 +62,13 @@ SUPABASE_UPLOAD_URL = f"{SUPABASE_HOST}/storage/v1/object/{SUPABASE_BUCKET}"
 SUPABASE_PUBLIC_PREFIX = (
     f"{SUPABASE_HOST}/storage/v1/object/public/{SUPABASE_BUCKET}")
 SUPABASE_REST_URL = f"{SUPABASE_HOST}/rest/v1"
+
+# growth_company column the generated image URL is written to. The optional
+# top-level "result" input picks the column (e.g. custom_image_url_2). Only
+# names matching this pattern are accepted — guards against writing to an
+# arbitrary column; anything else falls back to the default.
+DEFAULT_RESULT_COLUMN = "custom_image_url"
+RESULT_COLUMN_RE = re.compile(r"^custom_image_url(_[0-9]+)?$")
 
 DEFAULT_FONT_SIZE = 19
 DEFAULT_COLOR_TOLERANCE = 12
@@ -508,11 +516,36 @@ def extract_company_id(data):
     return None
 
 
-def update_growth_company_image(company_id, image_url, token):
-    """PATCH growth_company.custom_image_url for the given company.
+def extract_result_column(data):
+    """Return the optional top-level "result" target column name.
 
-    Direct Supabase REST call (token must allow the write). Never raises:
-    returns (ok, error_message)."""
+    Mirrors extract_company_id's unwrapping (next to "layers" or embedded in
+    the "layers_json" string). Validated against RESULT_COLUMN_RE; an absent or
+    unrecognized value yields DEFAULT_RESULT_COLUMN."""
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except Exception:
+            return DEFAULT_RESULT_COLUMN
+    if isinstance(data, dict):
+        if data.get("result"):
+            col = str(data["result"])
+            return col if RESULT_COLUMN_RE.match(col) else DEFAULT_RESULT_COLUMN
+        if "layers_json" in data:
+            return extract_result_column(data["layers_json"])
+    return DEFAULT_RESULT_COLUMN
+
+
+def update_growth_company_image(company_id, image_url, token,
+                                column=DEFAULT_RESULT_COLUMN):
+    """PATCH growth_company.<column> for the given company.
+
+    column defaults to custom_image_url; the caller picks an alternate slot
+    (e.g. custom_image_url_2) via the "result" input. Any value not matching
+    RESULT_COLUMN_RE is coerced back to the default. Direct Supabase REST call
+    (token must allow the write). Never raises: returns (ok, error_message)."""
+    if not RESULT_COLUMN_RE.match(column or ""):
+        column = DEFAULT_RESULT_COLUMN
     url = f"{SUPABASE_REST_URL}/growth_company?id=eq.{company_id}"
     headers = {
         "apikey": token,
@@ -522,7 +555,7 @@ def update_growth_company_image(company_id, image_url, token):
     }
     try:
         r = requests.patch(url, headers=headers,
-                           json={"custom_image_url": image_url}, timeout=30)
+                           json={column: image_url}, timeout=30)
         if r.status_code in (200, 204):
             return True, None
         return False, f"growth_company PATCH HTTP {r.status_code}: {r.text[:300]}"
@@ -575,8 +608,10 @@ def main():
         print(f"Error parsing JSON input: {e}")
         sys.exit(1)
     company_id = extract_company_id(parsed)
+    result_column = extract_result_column(parsed)
     if company_id:
-        print(f"company_id provided: {company_id}")
+        print(f"company_id provided: {company_id} (target column: "
+              f"{result_column})")
 
     results, errors = [], []
 
@@ -611,15 +646,17 @@ def main():
     # The image is already uploaded; a failed PATCH must not fail the run.
     if company_id and results:
         image_url = results[0]["final_image"]
-        ok, cb_err = update_growth_company_image(company_id, image_url, token)
+        ok, cb_err = update_growth_company_image(company_id, image_url, token,
+                                                 result_column)
         out["growth_company_update"] = {
             "company_id": company_id,
-            "custom_image_url": image_url,
+            "column": result_column,
+            "image_url": image_url,
             "ok": ok,
             "error": cb_err,
         }
         if ok:
-            print(f"growth_company {company_id} custom_image_url -> {image_url}")
+            print(f"growth_company {company_id} {result_column} -> {image_url}")
         else:
             print(f"  WARNING growth_company update failed: {cb_err}")
 
