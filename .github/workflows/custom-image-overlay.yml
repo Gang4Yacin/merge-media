@@ -28,9 +28,11 @@ jobs:
 
       - name: Download Apple Color Emoji font (iOS-style emoji)
         run: |
-          URL=$(curl -fsSL https://api.github.com/repos/samuelngs/apple-emoji-linux/releases/latest \
-            | grep -o 'https://[^"]*AppleColorEmoji-Linux\.ttf' | head -1)
-          echo "Emoji font: $URL"
+          # Pinned: "latest" jumped to a ~116 MB font on 2026-06-13 which is
+          # base64-embedded into page.set_content and OOM-crashes Chromium
+          # ("Target page/context/browser has been closed"). 20260219 is 37 MB.
+          URL="https://github.com/samuelngs/apple-emoji-ttf/releases/download/macos-26-20260219-2aa12422/AppleColorEmoji-Linux.ttf"
+          echo "Emoji font (pinned): $URL"
           curl -fsSL -o fonts/AppleColorEmoji.ttf "$URL"
           ls -la fonts/AppleColorEmoji.ttf
 
