@@ -14,6 +14,7 @@ SUPABASE_REST_URL = "https://bksiaeiqzmoaxvkdtspn.supabase.co/rest/v1"
 
 
 GENERATE_ADS_WEBHOOK_URL = "https://n8n.srv882539.hstgr.cloud/webhook/core-v3-generate-ads"
+COMPARAISON_WEBHOOK_URL = "https://n8n.srv882539.hstgr.cloud/webhook/ac95d01a-575f-4427-8c64-aa31b3fac83f"
 
 
 def insert_overlay_template(token, payload):
@@ -41,12 +42,40 @@ def insert_overlay_template(token, payload):
         return False, f"Insert error: {e}"
 
 
-def notify_generate_ads(overlay_template_id):
-    """POST OverlayTemplate.id to the 5- CORE V3 Generate Ads webhook.
+def get_green_template_content_tag(token, template_id):
+    """Fetch GreenTemplate.content_tag by id via PostgREST. Returns the tag string or None."""
+    if not template_id:
+        return None
+    url = f"{SUPABASE_REST_URL}/GreenTemplate?id=eq.{template_id}&select=content_tag"
+    headers = {"apikey": token, "Authorization": f"Bearer {token}"}
+    try:
+        r = requests.get(url, headers=headers, timeout=30)
+        if r.status_code == 200:
+            body = r.json()
+            if isinstance(body, list) and body:
+                return body[0].get("content_tag")
+        return None
+    except Exception:
+        return None
+
+
+def generation_webhook_url(content_tag):
+    """Pick the generation webhook based on content_tag.
+    'comparaison' -> Comparaison Generation workflow; everything else -> 5- CORE V3 Generate Ads."""
+    if (content_tag or "").strip().lower() == "comparaison":
+        return COMPARAISON_WEBHOOK_URL
+    return GENERATE_ADS_WEBHOOK_URL
+
+
+def notify_generate_ads(overlay_template_id, content_tag=None):
+    """POST OverlayTemplate.id to the right generation webhook.
+    content_tag='comparaison' -> Comparaison Generation workflow,
+    everything else (default) -> 5- CORE V3 Generate Ads.
     Returns (success, error_message)."""
+    target_url = generation_webhook_url(content_tag)
     try:
         r = requests.post(
-            GENERATE_ADS_WEBHOOK_URL,
+            target_url,
             json={"overlay_template_id": overlay_template_id},
             timeout=30,
         )
@@ -393,9 +422,10 @@ def main():
                     results.append(item)
 
                     if ot_id:
-                        ok_nt, nt_err = notify_generate_ads(ot_id)
+                        content_tag = get_green_template_content_tag(supabase_token, item.get("template_id"))
+                        ok_nt, nt_err = notify_generate_ads(ot_id, content_tag)
                         if ok_nt:
-                            print(f"  Notified core-v3-generate-ads webhook")
+                            print(f"  Notified generation webhook (content_tag={content_tag}): {generation_webhook_url(content_tag)}")
                         else:
                             print(f"  Webhook notify failed (non-fatal): {nt_err}")
                 else:
