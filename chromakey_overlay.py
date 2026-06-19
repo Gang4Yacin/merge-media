@@ -7,6 +7,13 @@ import json
 import os
 import uuid
 import math
+import time
+import urllib3.util.connection as urllib3_cn
+
+# GitHub-hosted runners intermittently fail to route IPv6 to the Hostinger n8n
+# host (ENETUNREACH), which silently drops webhook notifications. Force IPv4 for
+# all outbound requests so we always use the reliable A record (82.112.242.25).
+urllib3_cn.HAS_IPV6 = False
 
 SUPABASE_URL = "https://bksiaeiqzmoaxvkdtspn.supabase.co/storage/v1/object/n8n-image-generation/images"
 SUPABASE_PUBLIC_URL_PREFIX = "https://bksiaeiqzmoaxvkdtspn.supabase.co/storage/v1/object/public/n8n-image-generation/images"
@@ -67,23 +74,30 @@ def generation_webhook_url(content_tag):
     return GENERATE_ADS_WEBHOOK_URL
 
 
-def notify_generate_ads(overlay_template_id, content_tag=None):
-    """POST OverlayTemplate.id to the right generation webhook.
+def notify_generate_ads(overlay_template_id, content_tag=None, attempts=4):
+    """POST OverlayTemplate.id to the right generation webhook, with retries.
     content_tag='comparaison' -> Comparaison Generation workflow,
     everything else (default) -> 5- CORE V3 Generate Ads.
+    Retries transient network/HTTP failures with exponential backoff so a flaky
+    runner->n8n connection doesn't silently drop the trigger.
     Returns (success, error_message)."""
     target_url = generation_webhook_url(content_tag)
-    try:
-        r = requests.post(
-            target_url,
-            json={"overlay_template_id": overlay_template_id},
-            timeout=30,
-        )
-        if 200 <= r.status_code < 300:
-            return True, None
-        return False, f"HTTP {r.status_code}: {r.text[:300]}"
-    except Exception as e:
-        return False, f"Webhook error: {e}"
+    last_err = None
+    for i in range(attempts):
+        try:
+            r = requests.post(
+                target_url,
+                json={"overlay_template_id": overlay_template_id},
+                timeout=30,
+            )
+            if 200 <= r.status_code < 300:
+                return True, None
+            last_err = f"HTTP {r.status_code}: {r.text[:300]}"
+        except Exception as e:
+            last_err = f"Webhook error: {e}"
+        if i < attempts - 1:
+            time.sleep(2 ** i)  # 1s, 2s, 4s backoff between attempts
+    return False, last_err
 
 # Chromakey tuning parameters
 MIN_DIFF = 10.0      # Below this green-difference = fully opaque (foreground)
